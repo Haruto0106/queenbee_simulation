@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+import asyncio
+from mavsdk import System
+from mavsdk.mission import MissionItem, MissionPlan
+from queenbee.bee import Bee
+from queenbee.logger_drone import logger_info, log_file_r
+import numpy as np
+import time
+from numpy import linalg as la
+import random
+from queenbee.camera import Camera
+# from queenbee.plotter import df_lidar, plot_lidar, df_GPS, plot_GPS, plot_position, map_GPS
+SYSTEMADDRESS = "udp://:14540"
+altitude_hover=3
+altitude_goto = 3
+
+Cir_eq = 40076500 #m
+Cir_md = 40008600 #m
+
+KP = 0.6
+KI = 0
+KD = 0
+
+async def run():
+    await drone.Connect(system_address=SYSTEMADDRESS)
+    await drone.Catch_GPS()
+    await drone.Loop_hold_wait(system_address=SYSTEMADDRESS)
+      
+    coroutines = [
+        main_run(),
+        drone.Loop_flight_mode(),
+        drone.Loop_position(),
+        drone.Loop_lidar(),
+        drone.Loop_mission_progress(),
+        drone.Loop_log(),
+        drone.Loop_status_text(),
+        drone.Loop_mission_progress(),
+        drone.Loop_atitude()
+        ]
+    await asyncio.gather(*coroutines)
+
+
+
+async def main_run():
+    await asyncio.sleep(2)
+    await drone.Arm()
+    latitude_start = drone.Latitude_deg
+    longitude_start = drone.Longitude_deg
+    altitude_home = drone.Absolute_altitude_m
+    
+    latitude_goal = latitude_start + 0.00002   
+    longitude_goal = longitude_start + 0.00002
+    altitude_goal = altitude_home + altitude_goto
+    
+    logger_info.info(f"goal: lat:{latitude_goal}, lon:{longitude_goal}")
+    
+    
+    await drone.Set_takeoff_altitude(5)
+    await drone.Takeoff()
+    while drone.Lidar <= 3:
+        await asyncio.sleep(0.05)
+    
+    time_now = time.time()
+    goal = np.array([latitude_goal,
+                    longitude_goal,
+                    drone.Absolute_altitude_m])
+    current = np.array([drone.Latitude_deg,
+                        drone.Longitude_deg, 
+                        drone.Absolute_altitude_m])
+    dist = la.norm(goal - current)
+    error = 0
+    de = 0
+    ie = 0
+    
+    while dist < 0.2:
+        time_pre = time_now
+        error_pre = error
+        time_now = time.time()
+        T = time_now - time_pre
+        error = goal - current #
+        if not T == 0: 
+            de = (error - error_pre)/T
+            ie += (error + error_pre)*T/2
+        control = KP*error + KI*ie + KD*de #PID制御による制御量を決定
+            
+            
+        noise = random.uniform(-0.00001,0.00001) ###########シミュレーション環境ではノイズを意図的に入れる
+            
+        ##制御器
+        target = control + current + noise #実際はnoiseはなし
+        await drone.Loop_goto_location(latitude_target=target[0],
+                                        longitude_target=target[1],
+                                        altitude_target=target[2])
+            
+        current = np.array([drone.Latitude_deg,
+                            drone.Longitude_deg, 
+                            drone.Absolute_altitude_m])
+        dist = la.norm(goal - current)
+        
+    await drone.Hold()
+    await asyncio.sleep(1)
+    await drone.Land()
+    await asyncio.sleep(2)
+    return
+
+
+        
+if __name__ == "__main__":
+    drone = Bee()
+    camera = Camera()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(run())
+
+
+
